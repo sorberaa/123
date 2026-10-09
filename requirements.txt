@@ -4,3 +4,4 @@ aiohttp==3.10.10
 python-dotenv==1.0.1
 openpyxl==3.1.5
 apscheduler==3.11.3
+

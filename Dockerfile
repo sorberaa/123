@@ -10,3 +10,4 @@ COPY . .
 RUN mkdir -p reports downloads data
 
 CMD ["python", "bot.py"]
+
