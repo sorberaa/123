@@ -19,15 +19,17 @@ from kb import (
     boss_main_menu_kb,
     report_actions_kb,
     managers_menu_kb,
-    schedule_settings_kb
+    schedule_settings_kb,
+    admins_panel_kb,
+    transfer_boss_confirm_kb
 )
 
 log = logging.getLogger("handlers")
 router = Router(name="reporter_handlers")
 
 
-def is_boss_or_admin(user_id: int) -> bool:
-    return user_id == config.BOSS_ID or user_id in config.ADMIN_IDS
+async def check_admin_or_boss(user_id: int) -> bool:
+    return await db.is_admin_or_boss(user_id)
 
 
 # =========================================================================
@@ -62,8 +64,8 @@ async def on_left_member(message: Message):
 @router.message(F.chat.type.in_({"group", "supergroup"}), Command("setmanager"))
 async def cmd_group_setmanager(message: Message):
     """Назначение менеджера ответом на сообщение в группе."""
-    if not is_boss_or_admin(message.from_user.id):
-        return await message.reply("⛔ Назначать менеджеров может только владелец / шеф.")
+    if not await check_admin_or_boss(message.from_user.id):
+        return await message.reply("⛔ Назначать менеджеров может только шеф или администратор.")
 
     target = None
     if message.reply_to_message and message.reply_to_message.from_user:
@@ -79,8 +81,8 @@ async def cmd_group_setmanager(message: Message):
 @router.message(F.chat.type.in_({"group", "supergroup"}), Command("delmanager"))
 async def cmd_group_delmanager(message: Message):
     """Снятие менеджера ответом на сообщение в группе."""
-    if not is_boss_or_admin(message.from_user.id):
-        return await message.reply("⛔ Доступно только владельцу.")
+    if not await check_admin_or_boss(message.from_user.id):
+        return await message.reply("⛔ Доступно только шефу или администратору.")
 
     target = None
     if message.reply_to_message and message.reply_to_message.from_user:
@@ -90,6 +92,57 @@ async def cmd_group_delmanager(message: Message):
 
     await db.remove_manager(target.id)
     await message.reply(f"❌ Пользователь #{target.id} удален из менеджеров поддержки.")
+
+
+@router.message(F.chat.type.in_({"group", "supergroup"}), Command("addadmin"))
+async def cmd_group_addadmin(message: Message):
+    """Назначение администратора ответом на сообщение в группе."""
+    if not await check_admin_or_boss(message.from_user.id):
+        return await message.reply("⛔ Назначать администраторов может только шеф.")
+
+    target = None
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target = message.reply_to_message.from_user
+    if not target:
+        return await message.reply("ℹ️ Ответьте на сообщение пользователя: <code>/addadmin</code>")
+
+    name = target.full_name or target.username or f"Админ #{target.id}"
+    await db.add_admin(target.id, name, added_by=message.from_user.id)
+    await message.reply(f"🛡 <b>{name}</b> (ID: <code>{target.id}</code>) назначен Администратором отчетов!\nТеперь он имеет доступ к панели /menu и выгрузке Excel.")
+
+
+@router.message(F.chat.type.in_({"group", "supergroup"}), Command("deladmin"))
+async def cmd_group_deladmin(message: Message):
+    """Снятие администратора ответом на сообщение в группе."""
+    if not await db.is_boss(message.from_user.id):
+        return await message.reply("⛔ Снимать администраторов может только главный Шеф/Владелец.")
+
+    target = None
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target = message.reply_to_message.from_user
+    if not target:
+        return await message.reply("ℹ️ Ответьте на сообщение администратора: <code>/deladmin</code>")
+
+    await db.remove_admin(target.id)
+    await message.reply(f"❌ Администратор #{target.id} снят с должности.")
+
+
+@router.message(F.chat.type.in_({"group", "supergroup"}), Command("transferboss"))
+async def cmd_group_transferboss(message: Message):
+    """Передача прав шефа ответом на сообщение в группе."""
+    if not await db.is_boss(message.from_user.id):
+        return await message.reply("⛔ Передавать права Шефа может только действующий Шеф/Владелец.")
+
+    target = None
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target = message.reply_to_message.from_user
+    if not target:
+        return await message.reply("ℹ️ Ответьте на сообщение пользователя, которому передаете права: <code>/transferboss</code>")
+
+    name = target.full_name or target.username or f"#{target.id}"
+    await db.set_boss_id(target.id)
+    await message.reply(f"👑 <b>ПРАВА ШЕФА УСПЕШНО ПЕРЕДАНЫ!</b>\n\nНовый владелец бота: <b>{name}</b> (ID: <code>{target.id}</code>).\nТеперь все автоматические отчеты будут приходить ему.")
+
 
 
 @router.message(F.chat.type.in_({"group", "supergroup"}), F.text)
@@ -169,7 +222,7 @@ async def on_group_message(message: Message):
 @router.message(F.chat.type == "private", Command("report"))
 async def cmd_boss_start(message: Message):
     """Приветствие и главное меню шефа."""
-    if not is_boss_or_admin(message.from_user.id):
+    if not await check_admin_or_boss(message.from_user.id):
         return await message.answer(
             f"👋 Здравствуйте! Это служебный бот-генератор отчетов для владельца магазина.\n\n"
             f"Ваш Telegram ID: <code>{message.from_user.id}</code> (ожидается подтверждение шефа)."
@@ -324,7 +377,7 @@ async def cb_manager_help_add(cb: CallbackQuery):
 @router.message(F.chat.type == "private", Command("addmanager"))
 async def cmd_add_manager_pm(message: Message):
     """Ручное добавление менеджера через команду в ЛС."""
-    if not is_boss_or_admin(message.from_user.id):
+    if not await check_admin_or_boss(message.from_user.id):
         return
 
     parts = (message.text or "").split(maxsplit=2)
@@ -335,6 +388,165 @@ async def cmd_add_manager_pm(message: Message):
     name = parts[2].strip()
     await db.add_manager(mid, name)
     await message.answer(f"✅ Менеджер <b>{name}</b> (ID <code>{mid}</code>) успешно добавлен в базу!")
+
+
+# =========================================================================
+# УПРАВЛЕНИЕ АДМИНИСТРАТОРАМИ И ШЕФОМ В ЛС
+# =========================================================================
+
+@router.callback_query(F.data == "adm:panel")
+async def cb_admin_panel(cb: CallbackQuery):
+    """Панель управления доступом: текущий шеф и список админов."""
+    await cb.answer()
+    user_id = cb.from_user.id
+    if not await check_admin_or_boss(user_id):
+        return await cb.message.answer("⛔ Доступ ограничен.")
+
+    boss_id = await db.get_boss_id()
+    is_boss_user = (user_id == boss_id)
+    admins = await db.get_all_admins()
+
+    text = (
+        f"👑 <b>УПРАВЛЕНИЕ ПРАВАМИ И ДОСТУПОМ</b>\n\n"
+        f"👑 <b>Главный Шеф (Владелец):</b> <code>{boss_id}</code>\n\n"
+        f"🛡 <b>Администраторы отчетов ({len(admins)}):</b>\n"
+    )
+    if not admins:
+        text += "<i>Назначенных администраторов пока нет.</i>\n"
+    else:
+        for idx, a in enumerate(admins, 1):
+            text += f"{idx}. <b>{a['name']}</b> (ID: <code>{a['user_id']}</code>)\n"
+
+    text += (
+        f"\n<i>Администраторы имеют полный доступ к отчетам и Excel. "
+        f"Только Шеф может передавать права владельца и удалять админов.</i>"
+    )
+    await cb.message.edit_text(text, reply_markup=admins_panel_kb(is_boss_user, admins))
+
+
+@router.callback_query(F.data.startswith("adm:del:"))
+async def cb_admin_del(cb: CallbackQuery):
+    """Удаление администратора шефом."""
+    user_id = cb.from_user.id
+    if not await db.is_boss(user_id):
+        return await cb.answer("⛔ Только главный Шеф может снимать администраторов!", show_alert=True)
+
+    target_id = int(cb.data.split(":")[2])
+    await db.remove_admin(target_id)
+    await cb.answer("Администратор снят")
+    await cb_admin_panel(cb)
+
+
+@router.callback_query(F.data == "adm:help_add")
+async def cb_admin_help_add(cb: CallbackQuery):
+    await cb.answer()
+    text = (
+        "➕ <b>КАК НАЗНАЧИТЬ АДМИНИСТРАТОРА:</b>\n\n"
+        "<b>Способ 1:</b> В чате магазина ответьте (Reply) на сообщение человека командой:\n"
+        "<code>/addadmin</code>\n\n"
+        "<b>Способ 2:</b> В этом чате отправьте ID и имя:\n"
+        "<code>/addadmin 123456789 Алексей</code>\n"
+    )
+    await cb.message.answer(text)
+
+
+@router.callback_query(F.data == "adm:help_transfer")
+async def cb_admin_help_transfer(cb: CallbackQuery):
+    await cb.answer()
+    text = (
+        "👑 <b>КАК ПЕРЕДАТЬ ПРАВА ШЕФА (ВЛАДЕЛЬЦА):</b>\n\n"
+        "<b>Способ 1 (в группе):</b> Ответьте на сообщение человека командой:\n"
+        "<code>/transferboss</code>\n\n"
+        "<b>Способ 2 (в личке):</b> Отправьте команду с его ID:\n"
+        "<code>/transferboss 123456789</code>\n\n"
+        "⚠️ <i>После передачи все автоматические отчеты будут приходить новому владельцу.</i>"
+    )
+    await cb.message.answer(text)
+
+
+@router.message(F.chat.type == "private", Command("addadmin"))
+async def cmd_addadmin_pm(message: Message):
+    """Назначение администратора через команду в ЛС."""
+    if not await check_admin_or_boss(message.from_user.id):
+        return
+
+    parts = (message.text or "").split(maxsplit=2)
+    if len(parts) < 2 or not parts[1].isdigit():
+        return await message.answer("Формат: <code>/addadmin &lt;Telegram_ID&gt; [Имя]</code>\nПример: <code>/addadmin 123456789 Алексей</code>")
+
+    target_id = int(parts[1])
+    name = parts[2].strip() if len(parts) > 2 else f"Админ #{target_id}"
+    await db.add_admin(target_id, name, added_by=message.from_user.id)
+    await message.answer(f"🛡 <b>{name}</b> (ID: <code>{target_id}</code>) успешно назначен Администратором!")
+
+
+@router.message(F.chat.type == "private", Command("deladmin"))
+async def cmd_deladmin_pm(message: Message):
+    """Снятие администратора через команду в ЛС."""
+    if not await db.is_boss(message.from_user.id):
+        return await message.answer("⛔ Снимать администраторов может только главный Шеф!")
+
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].isdigit():
+        return await message.answer("Формат: <code>/deladmin &lt;Telegram_ID&gt;</code>")
+
+    target_id = int(parts[1])
+    await db.remove_admin(target_id)
+    await message.answer(f"❌ Администратор ID <code>{target_id}</code> снят с должности.")
+
+
+@router.message(F.chat.type == "private", Command("transferboss"))
+async def cmd_transferboss_pm(message: Message):
+    """Передача прав шефа через команду в ЛС с подтверждением."""
+    if not await db.is_boss(message.from_user.id):
+        return await message.answer("⛔ Передавать права может только действующий Шеф/Владелец!")
+
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].isdigit():
+        return await message.answer("Формат: <code>/transferboss &lt;Telegram_ID&gt;</code>\nПример: <code>/transferboss 987654321</code>")
+
+    new_boss_id = int(parts[1])
+    if new_boss_id == message.from_user.id:
+        return await message.answer("Вы уже являетесь шефом.")
+
+    await message.answer(
+        f"⚠️ <b>ВЫ УВЕРЕНЫ, ЧТО ХОТИТЕ ПЕРЕДАТЬ ПРАВА ШЕФА?</b>\n\n"
+        f"Новый владелец получит ID: <code>{new_boss_id}</code>.\n"
+        f"Все еженедельные и ежемесячные отчеты начнут приходить ему.",
+        reply_markup=transfer_boss_confirm_kb(new_boss_id)
+    )
+
+
+@router.callback_query(F.data.startswith("boss:do_transfer:"))
+async def cb_boss_do_transfer(cb: CallbackQuery):
+    """Выполнение передачи прав шефа."""
+    if not await db.is_boss(cb.from_user.id):
+        return await cb.answer("⛔ Вы не являетесь текущим шефом!", show_alert=True)
+
+    new_boss_id = int(cb.data.split(":")[2])
+    await db.set_boss_id(new_boss_id)
+    await cb.answer("Права шефа успешно переданы!", show_alert=True)
+    await cb.message.edit_text(
+        f"👑 <b>ПРАВА ШЕФА УСПЕШНО ПЕРЕДАНЫ!</b>\n\n"
+        f"Новый Шеф/Владелец: <code>{new_boss_id}</code>.\n"
+        f"Теперь он является главным получателем отчетов и администратором бота."
+    )
+
+
+@router.message(F.chat.type == "private", Command("admins"))
+async def cmd_admins_list_pm(message: Message):
+    """Просмотр списка администраторов и шефа."""
+    if not await check_admin_or_boss(message.from_user.id):
+        return
+    boss_id = await db.get_boss_id()
+    admins = await db.get_all_admins()
+    text = (
+        f"👑 <b>Главный Шеф:</b> <code>{boss_id}</code>\n\n"
+        f"🛡 <b>Администраторы ({len(admins)}):</b>\n"
+    )
+    for idx, a in enumerate(admins, 1):
+        text += f"{idx}. <b>{a['name']}</b> (ID: <code>{a['user_id']}</code>)\n"
+    await message.answer(text)
 
 
 @router.callback_query(F.data == "cfg:schedule")
@@ -376,7 +588,7 @@ async def on_document_upload(message: Message, bot: Bot):
     Прием файла экспорта истории чата result.json из Telegram Desktop.
     Позволяет мгновенно получить отчет по любому существующему чату магазина!
     """
-    if not is_boss_or_admin(message.from_user.id):
+    if not await check_admin_or_boss(message.from_user.id):
         return
 
     doc = message.document

@@ -70,6 +70,15 @@ async def init_db() -> None:
         """)
 
         await db.execute("""
+            CREATE TABLE IF NOT EXISTS admins (
+                user_id INTEGER PRIMARY KEY,
+                name TEXT DEFAULT '',
+                added_by INTEGER DEFAULT 0,
+                added_at TEXT DEFAULT (datetime('now'))
+            );
+        """)
+
+        await db.execute("""
             CREATE TABLE IF NOT EXISTS tracked_chats (
                 chat_id INTEGER PRIMARY KEY,
                 chat_title TEXT DEFAULT '',
@@ -91,6 +100,68 @@ async def init_db() -> None:
         await db.execute("CREATE INDEX IF NOT EXISTS idx_resp_ts ON response_times(reply_time);")
 
         await db.commit()
+
+
+# ================== РОЛИ: ШЕФ И АДМИНИСТРАТОРЫ ==================
+
+async def get_boss_id() -> int:
+    """Получает актуальный ID шефа из базы данных или конфига."""
+    async with aiosqlite.connect(get_db_path()) as db:
+        async with db.execute("SELECT value FROM settings WHERE key = 'boss_id'") as cursor:
+            row = await cursor.fetchone()
+            if row and row[0].isdigit():
+                return int(row[0])
+    from config import BOSS_ID
+    return BOSS_ID
+
+async def set_boss_id(new_boss_id: int) -> None:
+    """Передача прав шефа новому пользователю."""
+    async with aiosqlite.connect(get_db_path()) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('boss_id', ?)",
+            (str(new_boss_id),)
+        )
+        await db.commit()
+
+async def is_boss(user_id: int) -> bool:
+    """Проверка, является ли пользователь шефом/владельцем."""
+    boss_id = await get_boss_id()
+    return user_id == boss_id
+
+async def add_admin(user_id: int, name: str, added_by: int = 0) -> None:
+    """Назначение нового администратора."""
+    async with aiosqlite.connect(get_db_path()) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO admins (user_id, name, added_by, added_at) VALUES (?, ?, ?, datetime('now'))",
+            (user_id, name, added_by)
+        )
+        await db.commit()
+
+async def remove_admin(user_id: int) -> None:
+    """Снятие администратора."""
+    async with aiosqlite.connect(get_db_path()) as db:
+        await db.execute("DELETE FROM admins WHERE user_id = ?", (user_id,))
+        await db.commit()
+
+async def get_all_admins() -> List[Dict[str, Any]]:
+    """Получить список всех администраторов."""
+    async with aiosqlite.connect(get_db_path()) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT user_id, name, added_by, added_at FROM admins ORDER BY added_at DESC") as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+async def is_admin_or_boss(user_id: int) -> bool:
+    """Проверка прав: шеф или администратор."""
+    if await is_boss(user_id):
+        return True
+    from config import ADMIN_IDS
+    if user_id in ADMIN_IDS:
+        return True
+    async with aiosqlite.connect(get_db_path()) as db:
+        async with db.execute("SELECT 1 FROM admins WHERE user_id = ?", (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row is not None
 
 
 # ================== РАБОТА С МЕНЕДЖЕРАМИ ==================

@@ -50,6 +50,7 @@ async def on_startup(bot: Bot):
         await bot.set_my_commands([
             BotCommand(command="menu", description="📊 Панель отчетов шефа"),
             BotCommand(command="report", description="📈 Сформировать отчет"),
+            BotCommand(command="admins", description="👑 Администраторы и Шеф"),
             BotCommand(command="managers", description="👥 Список менеджеров"),
             BotCommand(command="settings", description="⚙️ Настройки расписания"),
             BotCommand(command="help", description="❓ Инструкция по работе"),

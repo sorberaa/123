@@ -34,7 +34,9 @@ async def send_scheduled_report(bot: Bot, days: int, title: str) -> None:
         excel_path = str(config.BASE_DIR / "reports" / excel_filename)
         generate_excel_file(stats, excel_path)
 
-        recipients = list(set([config.BOSS_ID] + config.ADMIN_IDS))
+        boss_id = await db.get_boss_id()
+        db_admins = [a["user_id"] for a in await db.get_all_admins()]
+        recipients = list(set([boss_id] + config.ADMIN_IDS + db_admins))
         for recipient_id in recipients:
             try:
                 await bot.send_message(
